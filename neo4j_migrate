@@ -1,0 +1,233 @@
+#!/usr/bin/env node
+const neo4j = require('neo4j-driver').default;
+const fs = require('fs');
+const path = require("path");
+const config = require("./connections.json");
+const requireDirectory = require("require-directory");
+
+const migrations = requireDirectory(module, path.join(__dirname, "/migrate"));
+
+function getFileName(fileName){
+  return fileName.slice(fileName.indexOf("_") + 1);
+}
+
+function getTimeStamp(fileName){
+  return fileName.slice(0, fileName.indexOf("_"))
+}
+
+function findMigration(fileName){
+  let migration = Object.keys(migrations).find((f) => {
+    let name = getFileName(f)
+    return fileName === name;
+  });
+
+  return {
+    fn: migrations[migration],
+    migration: migration
+  }
+}
+
+function getConnection(){
+  const driver = neo4j.driver(
+    config.url,
+    neo4j.auth.basic(
+      config.user,
+      config.password
+    )
+  );
+
+  return driver.session();
+}
+
+async function findExisting(session, ts, name){
+  let response = await session.run("MATCH (n:DatabaseMigration) WHERE (n.ts = {ts} AND n.name = {name}) RETURN n", {
+    ts: ts,
+    name: name
+  });
+
+  return response.records.length > 0
+}
+
+async function generateFile(fileName){
+  if(!fileName){
+    console.error(new Error("Invalid Options"));
+    return
+  }
+
+  let name = fileName.toLowerCase();
+
+  if(findMigration(name).migration){
+    console.error(new Error("Migration Already Exists"));
+    return
+  }
+
+  let file = `./migrate/${new Date().getTime()}_${name}.js`;
+  fs.copyFileSync('./template.js', file);
+  console.log(`Created: ${file}`);
+
+  return Promise.resolve()
+}
+
+async function run(fileName, direction){
+  let { fn, migration } = findMigration(fileName);
+
+  if(!migration){
+    console.log(new Error("Migration Does Not Exists"));
+    return
+  }
+
+  const session = getConnection();
+  const ts = getTimeStamp(migration);
+
+  try {
+    let existing = await findExisting(session, ts, fileName);
+
+    if(existing && direction === "up"){
+      throw new Error("Migration Already Exists")
+    }
+
+    if(!existing && direction === "down"){
+      throw new Error("Migration Does Not Exists")
+    }
+
+    await fn[direction](session);
+
+    if(direction === "up"){
+      await session.run("MERGE (migration:DatabaseMigration {ts:{ts},name:{name}})", {
+        ts: ts,
+        name: fileName
+      })
+    }
+
+    if(direction === "down"){
+      await session.run("MATCH (n:DatabaseMigration) WHERE (n.ts = {ts} AND n.name = {name}) DELETE n", {
+        ts: ts,
+        name: fileName
+      });
+    }
+
+  } catch (error) {
+    console.error(error);
+  } finally {
+    session.close();
+  }
+
+  return Promise.resolve();
+}
+
+async function runAll(direction){
+  let sortedMigrations = Object
+    .keys(migrations)
+    .map((migration) => {
+      let ts = getTimeStamp(migration)
+      let name = getFileName(migration)
+      return { ts, name }
+    })
+    .sort((a, b) => {
+      let ats = parseInt(a.ts)
+      let bts = parseInt(b.ts)
+
+      if(ats > bts){
+        return 1
+      }
+
+      if(ats < bts){
+        return -1
+      }
+
+      if(ats === bts){
+        return 0
+      }
+    })
+
+  while(sortedMigrations.length > 0){
+    let migration = sortedMigrations.pop()
+    await run(migration.name, direction)
+  }
+
+  return Promise.resolve()
+}
+
+async function getIndexes(){
+  const session = getConnection();
+  try {
+    let response = await session.run("CALL db.indexes()")
+    response.records.forEach((record) => {
+      let hash = {}
+      record.keys.forEach((key, index) => {
+        hash[key] = record._fields[index]
+      })
+      console.log(hash)
+    })
+  } catch(e) {
+    console.error(e)
+  } finally {
+    session.close()
+  }
+
+  return Promise.resolve();
+}
+
+async function getSchema(){
+  const session = getConnection();
+  try {
+    let response = await session.run("CALL db.schema()")
+    response.records.forEach((record) => {
+      record._fields[0].forEach((node) => {
+        console.log(node)
+      })
+      record._fields[1].forEach((rel) => {
+        console.log(rel)
+      })
+    })
+  } catch(e) {
+    console.error(e)
+  } finally {
+    session.close()
+  }
+
+  return Promise.resolve();
+}
+
+function main(flag, context){
+  let promise = null;
+
+  switch(flag){
+    case "-ls":
+      if(context === "indexes"){
+        promise = getIndexes()
+      } else if(context === "schema") {
+        promise = getSchema()
+      } else {
+        throw new Error("Invalid Options")
+      }
+      break;
+    case "-g":
+      promise = generateFile(context);
+      break;
+    case "-up":
+      if(context === "-all"){
+        promise = runAll("up");
+      } else {
+        promise = run(context, "up");
+      }
+      break;
+    case "-down":
+      if(context === "-all"){
+        promise = runAll("down");
+      } else {
+        promise = run(context, "down");
+      }
+      break;
+    default:
+      throw new Error("Invalid Options")
+  }
+
+  promise.catch((error) => {
+    console.error(error)
+  }).finally(() => {
+    process.exit(0)
+  });
+}
+
+main(process.argv[2], process.argv[3]);

@@ -1,0 +1,23 @@
+{
+  "name": "graph_migrations",
+  "version": "0.0.1",
+  "description": "Migration tool for Neo4j. \n *** WARNING *** \n USE AT OWN RISK",
+  "author": "Christopher Kempton <kempt09@gmail.com>",
+  "url": "https://github.com/kempt09/neo4j-migrations.git",
+  "respositry": "https://github.com/kempt09/neo4j-migrations.git",
+  "license": "ISC",
+  "main": "./graph_migrate",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "neo4j",
+    "migrations",
+    "node",
+    "database"
+  ],
+  "dependencies": {
+    "neo4j-driver": "^1.7.6",
+    "require-directory": "^2.1.1"
+  }
+}
